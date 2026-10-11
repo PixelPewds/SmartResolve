@@ -1,0 +1,129 @@
+@import "tailwindcss";
+
+/* Design rule for this app: the interface is monochrome. Colour appears only
+   when it carries meaning (priority band, sentiment). If something is
+   coloured, it is telling the agent something. */
+
+@theme {
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  --color-canvas: #f5f5f4;
+  --color-surface: #ffffff;
+  --color-sunken: #fafaf9;
+  --color-line: #e7e5e4;
+  --color-line-strong: #d6d3d1;
+  --color-ink: #1c1917;
+  --color-ink-2: #44403c;
+  --color-muted: #6f6964;
+  --color-faint: #a8a29e;
+  --color-invert: #1c1917;
+  --color-on-invert: #fafaf9;
+
+  /* priority bands, all text pairs measured >= 4.5:1 */
+  --color-p1: #b91c1c;  --color-p1-bg: #fef2f2;
+  --color-p2: #c2410c;  --color-p2-bg: #fff7ed;
+  --color-p3: #a16207;  --color-p3-bg: #fefce8;
+  --color-p4: #57534e;  --color-p4-bg: #f5f5f4;
+
+  /* sentiment */
+  --color-neg: #be123c; --color-neg-bg: #fff1f2;
+  --color-neu: #57534e; --color-neu-bg: #f5f5f4;
+  --color-pos: #15803d; --color-pos-bg: #f0fdf4;
+
+  --radius-card: 10px;
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Dark tokens. Applied when the user picks Dark, or picks System (the
+   default) and the OS is dark. Declared twice because a media query and an
+   attribute selector cannot share one rule. */
+:root[data-theme="dark"] {
+  --color-canvas: #0c0a09;
+  --color-surface: #151311;
+  --color-sunken: #1a1816;
+  --color-line: #292524;
+  --color-line-strong: #3a3532;
+  --color-ink: #f5f5f4;
+  --color-ink-2: #d6d3d1;
+  --color-muted: #a8a29e;
+  --color-faint: #78716c;
+  --color-invert: #f5f5f4;
+  --color-on-invert: #1c1917;
+
+  --color-p1: #f87171;  --color-p1-bg: #2a1314;
+  --color-p2: #fb923c;  --color-p2-bg: #2a190d;
+  --color-p3: #facc15;  --color-p3-bg: #252008;
+  --color-p4: #a8a29e;  --color-p4-bg: #1c1917;
+
+  --color-neg: #fb7185; --color-neg-bg: #2a1218;
+  --color-neu: #a8a29e; --color-neu-bg: #1c1917;
+  --color-pos: #4ade80; --color-pos-bg: #0e2316;
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-canvas: #0c0a09;
+    --color-surface: #151311;
+    --color-sunken: #1a1816;
+    --color-line: #292524;
+    --color-line-strong: #3a3532;
+    --color-ink: #f5f5f4;
+    --color-ink-2: #d6d3d1;
+    --color-muted: #a8a29e;
+    --color-faint: #78716c;
+    --color-invert: #f5f5f4;
+    --color-on-invert: #1c1917;
+
+    --color-p1: #f87171;  --color-p1-bg: #2a1314;
+    --color-p2: #fb923c;  --color-p2-bg: #2a190d;
+    --color-p3: #facc15;  --color-p3-bg: #252008;
+    --color-p4: #a8a29e;  --color-p4-bg: #1c1917;
+
+    --color-neg: #fb7185; --color-neg-bg: #2a1218;
+    --color-neu: #a8a29e; --color-neu-bg: #1c1917;
+    --color-pos: #4ade80; --color-pos-bg: #0e2316;
+    color-scheme: dark;
+  }
+}
+
+@layer base {
+  html { -webkit-text-size-adjust: 100%; color-scheme: light; }
+  body {
+    @apply bg-canvas text-ink font-sans antialiased;
+    font-feature-settings: "ss01", "cv11";
+    text-rendering: optimizeLegibility;
+  }
+  ::selection { background: var(--color-ink); color: var(--color-canvas); }
+  :focus-visible { outline: 2px solid var(--color-ink); outline-offset: 2px; border-radius: 4px; }
+  input, textarea, select, button { font: inherit; color: inherit; }
+}
+
+@layer components {
+  .field {
+    @apply w-full rounded-md border border-line-strong bg-surface px-3 py-2 text-sm text-ink
+      placeholder:text-muted transition-colors duration-150
+      hover:border-faint focus:border-ink focus:outline-none;
+  }
+  .label { @apply mb-1.5 block text-[13px] font-medium text-ink-2; }
+  .hint { @apply mt-1.5 text-xs text-muted; }
+  .num { font-variant-numeric: tabular-nums; }
+  .panel { @apply rounded-[var(--radius-card)] border border-line bg-surface; }
+  .eyebrow { @apply font-mono text-[11px] uppercase tracking-[0.08em] text-muted; }
+}
+
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes shimmer { from { background-position: -200% 0; } to { background-position: 200% 0; } }
+
+.rise { animation: rise 0.42s var(--ease-out-expo) both; }
+.skeleton {
+  background: linear-gradient(90deg, var(--color-sunken) 0%, var(--color-line) 50%, var(--color-sunken) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+  border-radius: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+}
