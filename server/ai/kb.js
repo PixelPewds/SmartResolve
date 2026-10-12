@@ -75,3 +75,21 @@ export function recommendArticles(text, category, limit = 3) {
     .slice(0, limit)
     .map(({ keywords, ...a }) => a);
 }
+
+// Suggested next steps for the agent. Rule-based, by category and severity.
+const ACTIONS = {
+  billing: ['Check both transactions in the payment gateway', 'Confirm whether either charge is still pending', 'Refund the duplicate if both have settled', 'Send the refund timeline article'],
+  technical: ['Check the status page and error monitoring for the reported time', 'Ask for device, browser and a screenshot', 'Search Incident Watch for similar reports', 'Escalate to engineering if reproducible'],
+  delivery: ['Open the courier tracking for the order', 'Check the last scan location and date', 'Raise a claim with the courier if past the expected date', 'Offer replacement or refund'],
+  account: ['Verify the customer through the registered email', 'Check recent sign-ins and devices', 'Reset sessions if anything looks unfamiliar', 'Confirm two-factor authentication is on'],
+  general: ['Answer from the knowledge base', 'Link the relevant help article', 'Close if no follow-up is needed'],
+};
+
+export function recommendedActions({ text, category, severity, routing }) {
+  const norm = normalize(text);
+  const list = [...ACTIONS[category]];
+  if (routing?.rule === 'security-override') list.unshift('Treat as a possible account takeover: lock the account first');
+  if (severity === 'critical' && category === 'technical') list.unshift('Check Incident Watch: this may affect many customers');
+  if (matchPhrases(norm, ['charged twice', 'double charged']).length) list.splice(1, 0, 'Use template KB-101 "I was charged twice"');
+  return list.slice(0, 5);
+}

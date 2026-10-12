@@ -1,113 +1,119 @@
-// Data layer. Two implementations behind one interface:
+// Data layer. Two implementations behind one small interface:
 //
-//   MONGODB_URI set   -> MongoDB (Atlas in production)
-//   MONGODB_URI unset -> in-process memory, seeded on boot
+//   MONGODB_URI set   -> MongoDB (Atlas)
+//   MONGODB_URI unset -> in-process memory
 //
-// Memory mode exists so the prototype runs with zero setup. On Vercel each
-// serverless instance has its own memory, so tickets created there are not
-// shared or durable. Set MONGODB_URI for anything beyond a solo demo.
+//   all(col)  get(col, id)  insert(col, doc)  update(col, id, patch)
+//   seq(name)  reseed()
+//
+// Collections hold a few hundred documents, so "load all, filter in JS" is
+// simpler than building query translation for two backends.
+//
+// SEED_VERSION: bump it when the data model changes. On the next cold start
+// the database is wiped and re-seeded exactly once, guarded by a lock
+// document so concurrent serverless instances cannot both seed.
 
 import { MongoClient } from 'mongodb';
 import { buildSeed } from './seed.js';
 
-const strip = (doc) => {
-  if (!doc) return null;
-  const { _id, ...rest } = doc;
-  return rest;
-};
+export const SEED_VERSION = 3;
+const COLLECTIONS = ['users', 'tickets', 'incidents', 'notifications', 'reads', 'counters'];
+const clone = (x) => (x == null ? x : structuredClone(x));
 
-function memoryStore(seed) {
-  const users = new Map(seed.users.map((u) => [u.id, u]));
-  const tickets = new Map(seed.tickets.map((t) => [t.id, t]));
-  let counter = seed.nextNumber;
-  const clone = (x) => (x ? structuredClone(x) : null);
-
-  return {
+function memoryStore() {
+  const db = Object.fromEntries(COLLECTIONS.map((c) => [c, new Map()]));
+  const store = {
     mode: 'memory',
-    users: {
-      findByEmail: async (email) => clone([...users.values()].find((u) => u.email === email)),
-      findById: async (id) => clone(users.get(id)),
-      insert: async (u) => { users.set(u.id, u); return clone(u); },
+    seededAt: null,
+    all: async (col) => [...db[col].values()].map(clone),
+    get: async (col, id) => clone(db[col].get(id)),
+    insert: async (col, doc) => { db[col].set(doc.id, clone(doc)); return clone(doc); },
+    update: async (col, id, patch) => {
+      const cur = db[col].get(id);
+      if (!cur) return null;
+      const next = { ...cur, ...clone(patch) };
+      db[col].set(id, next);
+      return clone(next);
     },
-    tickets: {
-      insert: async (t) => { tickets.set(t.id, t); return clone(t); },
-      get: async (id) => clone(tickets.get(id)),
-      update: async (id, patch) => {
-        const cur = tickets.get(id);
-        if (!cur) return null;
-        const next = { ...cur, ...patch };
-        tickets.set(id, next);
-        return clone(next);
-      },
-      list: async ({ customerId } = {}) =>
-        [...tickets.values()].filter((t) => !customerId || t.customerId === customerId).map(clone),
-      countSince: async ({ customerId, since }) =>
-        [...tickets.values()].filter((t) => t.customerId === customerId && t.createdAt >= since).length,
+    seq: async (name) => {
+      const cur = db.counters.get(name) || { id: name, value: 0 };
+      cur.value += 1;
+      db.counters.set(name, cur);
+      return cur.value;
     },
-    nextTicketNumber: async () => counter++,
+    async reseed() {
+      for (const c of COLLECTIONS) db[c].clear();
+      await load(store, await buildSeed());
+    },
   };
+  return store;
 }
 
 async function mongoStore(uri) {
   const client = new MongoClient(uri, { maxPoolSize: 5, serverSelectionTimeoutMS: 8000 });
   await client.connect();
   const db = client.db(process.env.MONGODB_DB || 'smartresolve');
-  const Users = db.collection('users');
-  const Tickets = db.collection('tickets');
-  const Counters = db.collection('counters');
+  const C = (name) => db.collection(name);
+  const strip = (d) => { if (!d) return null; const { _id, ...rest } = d; return rest; };
 
-  await Promise.all([
-    Users.createIndex({ email: 1 }, { unique: true }),
-    Tickets.createIndex({ customerId: 1, createdAt: -1 }),
-    Tickets.createIndex({ 'priority.score': -1 }),
-  ]);
-
-  // Seed exactly once. Concurrent cold starts race here, so the insert of the
-  // lock document is the gate: only the instance that wins it seeds.
-  if ((await Tickets.estimatedDocumentCount()) === 0) {
-    try {
-      await Counters.insertOne({ _id: 'seed-lock', at: new Date().toISOString() });
-      const seed = await buildSeed();
-      await Users.insertMany(seed.users.map((u) => ({ _id: u.id, ...u })), { ordered: false }).catch(() => {});
-      await Tickets.insertMany(seed.tickets.map((t) => ({ _id: t.id, ...t })));
-      await Counters.updateOne({ _id: 'ticket' }, { $set: { seq: seed.nextNumber } }, { upsert: true });
-    } catch (e) {
-      if (e?.code !== 11000) throw e; // 11000 = another instance already seeded
-    }
-  }
-
-  return {
+  const store = {
     mode: 'mongodb',
-    users: {
-      findByEmail: async (email) => strip(await Users.findOne({ email })),
-      findById: async (id) => strip(await Users.findOne({ _id: id })),
-      insert: async (u) => { await Users.insertOne({ _id: u.id, ...u }); return u; },
+    seededAt: null,
+    all: async (col) => (await C(col).find({}).toArray()).map(strip),
+    get: async (col, id) => strip(await C(col).findOne({ _id: id })),
+    insert: async (col, doc) => { await C(col).insertOne({ _id: doc.id, ...doc }); return doc; },
+    update: async (col, id, patch) => strip(await C(col).findOneAndUpdate({ _id: id }, { $set: patch }, { returnDocument: 'after' })),
+    seq: async (name) => {
+      const r = await C('counters').findOneAndUpdate({ _id: name }, { $inc: { value: 1 } }, { upsert: true, returnDocument: 'after' });
+      return r.value;
     },
-    tickets: {
-      insert: async (t) => { await Tickets.insertOne({ _id: t.id, ...t }); return t; },
-      get: async (id) => strip(await Tickets.findOne({ _id: id })),
-      update: async (id, patch) =>
-        strip(await Tickets.findOneAndUpdate({ _id: id }, { $set: patch }, { returnDocument: 'after' })),
-      list: async ({ customerId } = {}) =>
-        (await Tickets.find(customerId ? { customerId } : {}).sort({ createdAt: -1 }).limit(2000).toArray()).map(strip),
-      countSince: async ({ customerId, since }) => Tickets.countDocuments({ customerId, createdAt: { $gte: since } }),
-    },
-    nextTicketNumber: async () => {
-      const r = await Counters.findOneAndUpdate({ _id: 'ticket' }, { $inc: { seq: 1 } }, { upsert: true, returnDocument: 'before' });
-      return r?.seq ?? 1001;
+    async reseed() {
+      await Promise.all(COLLECTIONS.map((c) => C(c).deleteMany({})));
+      await load(store, await buildSeed(), (col, docs) => C(col).insertMany(docs.map((d) => ({ _id: d.id, ...d }))));
+      await C('meta').updateOne({ _id: 'seed' }, { $set: { version: SEED_VERSION, at: new Date().toISOString() } }, { upsert: true });
     },
   };
+
+  const meta = await C('meta').findOne({ _id: 'seed' });
+  if (meta?.version !== SEED_VERSION) {
+    try {
+      await C('meta').insertOne({ _id: `lock-v${SEED_VERSION}`, at: new Date().toISOString() });
+      await store.reseed();
+    } catch (e) {
+      if (e?.code !== 11000) throw e;
+      // Another instance holds the lock and is seeding. Wait for it.
+      for (let i = 0; i < 20; i++) {
+        if ((await C('meta').findOne({ _id: 'seed' }))?.version === SEED_VERSION) break;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+  }
+  return store;
 }
 
-// Cached on globalThis so a warm serverless instance reuses one connection
-// instead of opening a new pool per request.
+async function load(store, seed, bulk) {
+  for (const col of ['users', 'tickets', 'incidents', 'notifications']) {
+    if (!seed[col].length) continue;
+    if (bulk) await bulk(col, seed[col]);
+    else for (const d of seed[col]) await store.insert(col, d);
+  }
+  for (const [name, value] of Object.entries(seed.counters)) {
+    if (bulk) await bulk('counters', [{ id: name, value }]);
+    else await store.insert('counters', { id: name, value });
+  }
+  store.seededAt = new Date().toISOString();
+}
+
+// Cached on globalThis so a warm serverless instance reuses one connection.
 export function getStore() {
   if (!globalThis.__srStore) {
     const uri = process.env.MONGODB_URI;
-    globalThis.__srStore = (uri ? mongoStore(uri) : buildSeed().then(memoryStore)).catch((err) => {
-      globalThis.__srStore = null; // let the next request retry instead of caching the failure
-      throw err;
-    });
+    globalThis.__srStore = (async () => {
+      if (uri) return mongoStore(uri);
+      const s = memoryStore();
+      await s.reseed();
+      return s;
+    })().catch((err) => { globalThis.__srStore = null; throw err; });
   }
   return globalThis.__srStore;
 }

@@ -1,171 +1,142 @@
-import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, AreaChart, Area } from 'recharts';
-import { Skeleton, ErrorNote, Band } from '../../components/ui.jsx';
+import { useState } from 'react';
+import { ResponsiveContainer, BarChart, Bar as RBar, XAxis, YAxis, Tooltip, CartesianGrid, AreaChart, Area, LineChart, Line, Legend } from 'recharts';
+import { Page, PageHeader, Panel, Stat, StatRow, Tabs, Bar } from '../../components/kit.jsx';
+import { Band, Skeleton, ErrorNote } from '../../components/ui.jsx';
 import { useApi } from '../../lib/api.js';
 import { useTokens } from '../../lib/tokens.js';
 
 const dayLabel = (d) => new Date(d + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+const pctDelta = (a, b) => (a == null || !b ? null : Math.round(((a - b) / b) * 100));
+const h = (x) => (x == null ? '–' : `${x.toFixed(1)}h`);
 
 export default function Analytics() {
-  const { data, error, loading, reload } = useApi('/analytics');
+  const [days, setDays] = useState('7');
+  const { data, error, loading, reload } = useApi(`/analytics?days=${days}`);
   const c = useTokens();
 
-  if (loading) return <div className="space-y-4 px-5 py-6 lg:px-8"><Skeleton className="h-6 w-40" /><Skeleton className="h-24" /><Skeleton className="h-72" /></div>;
-  if (error) return <div className="px-5 py-6 lg:px-8"><ErrorNote error={error} onRetry={reload} /></div>;
+  if (loading && !data) return <Page><Skeleton className="h-8 w-40" /><Skeleton className="mt-6 h-24" /><Skeleton className="mt-6 h-72" /></Page>;
+  if (error) return <Page><ErrorNote error={error} onRetry={reload} /></Page>;
 
   const k = data.kpis;
-  // Share is computed over a trailing 3-day window: single days can hold one
-  // ticket, which turns the line into 0/100 noise.
+  const TEAM_TONES = [c.ink, c['ink-2'], c.muted, c.faint, c['line-strong']];
   const daily = data.daily.map((d, i, arr) => {
     const win = arr.slice(Math.max(0, i - 2), i + 1);
     const tot = win.reduce((s, x) => s + x.total, 0);
-    const neg = win.reduce((s, x) => s + x.negative, 0);
-    return { ...d, day: dayLabel(d.date), negShare: tot ? Math.round((neg / tot) * 100) : null };
+    const pct = (key) => (tot ? Math.round((win.reduce((s, x) => s + x[key], 0) / tot) * 100) : null);
+    return { ...d, day: dayLabel(d.date), negPct: pct('negative'), neuPct: pct('neutral'), posPct: pct('positive') };
   });
   const axis = { stroke: c.muted, fontSize: 11, tickLine: false, axisLine: false };
-  const tooltip = {
-    contentStyle: { background: c.surface, border: `1px solid ${c.line}`, borderRadius: 8, fontSize: 12, boxShadow: 'none' },
-    labelStyle: { color: c.ink, fontWeight: 600, marginBottom: 4 },
-    itemStyle: { padding: 0 },
-    cursor: { fill: c.sunken },
-  };
-  const maxTeam = Math.max(1, ...data.teams.map((t) => t.open + t.resolved));
-  const maxCat = Math.max(1, ...data.categories.map((x) => x.count));
+  const tip = { contentStyle: { background: c.surface, border: `1px solid ${c.line}`, borderRadius: 8, fontSize: 12 }, cursor: { fill: c.sunken } };
+  const maxBand = Math.max(1, ...data.bands.map((b) => b.count));
+  const maxRec = Math.max(1, ...data.recurring.map((r) => r.count));
 
   return (
-    <div className="px-5 py-6 lg:px-8">
-      <h1 className="text-xl font-semibold tracking-tight">Analytics</h1>
-      <p className="mt-1 text-[13px] text-muted">Last 14 days, {k.total} tickets.</p>
+    <Page>
+      <PageHeader title="Analytics" sim="Computed from the simulated ticket data. No metric here is hardcoded."
+        sub={`Last ${days} days, ${k.total} tickets. Change is against the ${days} days before.`}
+        actions={<Tabs size="sm" value={days} onChange={setDays} items={[{ value: '7', label: '7 days' }, { value: '14', label: '14 days' }]} />} />
 
-      <section className="panel mt-6 grid grid-cols-2 divide-line sm:grid-cols-3 xl:grid-cols-6 [&>*]:border-line">
-        <Kpi label="Active" value={k.active} />
-        <Kpi label="Critical open" value={k.criticalOpen} tone={k.criticalOpen ? 'text-p1' : ''} />
-        <Kpi label="First response" value={`${k.medianFirstResponseH}h`} sub="median" />
-        <Kpi label="Resolution" value={`${k.medianResolutionH}h`} sub="median" />
-        <Kpi label="Within SLA" value={`${k.slaCompliance}%`} sub="of resolved" />
-        <Kpi label="Model agreement" value={`${k.modelAgreement}%`} sub="not corrected by agents" />
-      </section>
+      <div className="mt-5">
+        <StatRow cols="grid-cols-2 lg:grid-cols-6">
+          <Stat label="Tickets" value={k.total} delta={pctDelta(k.total, k.totalPrev)} goodWhen="down" sub={k.totalPrev ? 'vs previous' : 'no earlier data'} />
+          <Stat label="First response" value={h(k.firstResponseH)} sub="median" />
+          <Stat label="Resolution time" value={h(k.resolutionH)} delta={pctDelta(k.resolutionH, k.resolutionPrev)} goodWhen="down" sub="median" />
+          <Stat label="SLA met" value={k.slaCompliance != null ? `${k.slaCompliance}%` : '–'} sub="of resolved tickets" />
+          <Stat label="Customer rating" value={k.csat != null ? `${k.csat.toFixed(1)} / 5` : '–'} sub={`${k.csatResponses} responses`} />
+          <Stat label="Incidents" value={k.incidents} sub="confirmed or resolved" />
+        </StatRow>
+      </div>
 
-      <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_300px]">
-        <section className="panel p-5">
-          <Head title="Ticket volume by priority" />
-          <div className="mt-4 h-64">
+      <div className="mt-6 grid gap-6 xl:grid-cols-2">
+        <Panel title="Volume by department">
+          <div className="h-64">
             <ResponsiveContainer>
               <BarChart data={daily} margin={{ left: -24, right: 4, top: 4 }}>
                 <CartesianGrid vertical={false} stroke={c.line} />
-                <XAxis dataKey="day" {...axis} interval={1} />
+                <XAxis dataKey="day" {...axis} interval={days === '14' ? 1 : 0} />
                 <YAxis {...axis} allowDecimals={false} />
-                <Tooltip {...tooltip} />
-                <Bar dataKey="P4" stackId="a" fill={c.p4} name="P4 Low" />
-                <Bar dataKey="P3" stackId="a" fill={c.p3} name="P3 Medium" />
-                <Bar dataKey="P2" stackId="a" fill={c.p2} name="P2 High" />
-                <Bar dataKey="P1" stackId="a" fill={c.p1} name="P1 Critical" radius={[3, 3, 0, 0]} />
+                <Tooltip {...tip} />
+                <Legend wrapperStyle={{ fontSize: 11, color: c.muted }} iconSize={8} />
+                {data.teamsList.map((t, i) => <RBar key={t} dataKey={t} stackId="t" fill={TEAM_TONES[i]} radius={i === data.teamsList.length - 1 ? [3, 3, 0, 0] : 0} />)}
               </BarChart>
             </ResponsiveContainer>
           </div>
-        </section>
+        </Panel>
 
-        <section className="panel p-5">
-          <Head title="Open by priority" />
-          <ul className="mt-4 space-y-3">
-            {data.bands.map((b) => (
-              <li key={b.band} className="flex items-center gap-3">
-                <Band band={b.band} />
-                <span className="flex-1 text-[13px] text-ink-2">{b.label}</span>
-                <span className="num font-mono text-[15px] font-semibold">{b.count}</span>
-              </li>
-            ))}
-          </ul>
-          <div className="mt-6 border-t border-line pt-4">
-            <p className="eyebrow">Auto-routed</p>
-            <p className="num mt-1 font-mono text-2xl font-semibold">{k.autoRouted}%</p>
-            <p className="mt-1 text-xs text-muted">Sent to a team without manual triage review.</p>
-          </div>
-        </section>
-
-        <section className="panel p-5">
-          <Head title="Negative sentiment share" note={`3-day rolling, ${k.negativeShare}% overall`} />
-          <div className="mt-4 h-52">
+        <Panel title="Sentiment trend" sub="Share of tickets, 3-day rolling">
+          <div className="h-64">
             <ResponsiveContainer>
-              <AreaChart data={daily} margin={{ left: -24, right: 4, top: 4 }}>
-                <defs>
-                  <linearGradient id="neg" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={c.neg} stopOpacity={0.22} />
-                    <stop offset="100%" stopColor={c.neg} stopOpacity={0} />
-                  </linearGradient>
-                </defs>
+              <AreaChart data={daily} margin={{ left: -24, right: 4, top: 4 }} stackOffset="expand">
                 <CartesianGrid vertical={false} stroke={c.line} />
-                <XAxis dataKey="day" {...axis} interval={1} />
-                <YAxis {...axis} unit="%" domain={[0, 100]} />
-                <Tooltip {...tooltip} formatter={(v) => [`${v}%`, 'Negative']} />
-                <Area type="monotone" dataKey="negShare" stroke={c.neg} strokeWidth={1.75} fill="url(#neg)" connectNulls />
+                <XAxis dataKey="day" {...axis} interval={days === '14' ? 1 : 0} />
+                <YAxis {...axis} tickFormatter={(v) => `${Math.round(v * 100)}%`} />
+                <Tooltip {...tip} formatter={(v, n) => [`${v}%`, n]} />
+                <Legend wrapperStyle={{ fontSize: 11 }} iconSize={8} />
+                <Area type="monotone" dataKey="negPct" name="Negative" stackId="s" stroke={c.neg} fill={c.neg} fillOpacity={0.55} connectNulls />
+                <Area type="monotone" dataKey="neuPct" name="Neutral" stackId="s" stroke={c.neu} fill={c.neu} fillOpacity={0.3} connectNulls />
+                <Area type="monotone" dataKey="posPct" name="Positive" stackId="s" stroke={c.pos} fill={c.pos} fillOpacity={0.45} connectNulls />
               </AreaChart>
             </ResponsiveContainer>
           </div>
-        </section>
+        </Panel>
 
-        <section className="panel p-5">
-          <Head title="Team load" />
-          <ul className="mt-4 space-y-3.5">
-            {data.teams.map((t) => (
-              <li key={t.team}>
-                <div className="flex items-baseline justify-between text-[13px]">
-                  <span className="truncate">{t.team}</span>
-                  <span className="num font-mono text-xs text-muted"><span className="text-ink">{t.open}</span> open &middot; {t.resolved} done</span>
-                </div>
-                <div className="mt-1.5 flex h-1.5 gap-px" aria-hidden="true">
-                  <span className="rounded-l-sm bg-ink" style={{ width: `${(t.open / maxTeam) * 100}%` }} />
-                  <span className="rounded-r-sm bg-line-strong" style={{ width: `${(t.resolved / maxTeam) * 100}%` }} />
-                </div>
-              </li>
-            ))}
-          </ul>
-        </section>
+        <Panel title="Resolution time" sub="Median hours, by day resolved">
+          <div className="h-56">
+            <ResponsiveContainer>
+              <LineChart data={daily} margin={{ left: -24, right: 8, top: 4 }}>
+                <CartesianGrid vertical={false} stroke={c.line} />
+                <XAxis dataKey="day" {...axis} interval={days === '14' ? 1 : 0} />
+                <YAxis {...axis} unit="h" />
+                <Tooltip {...tip} formatter={(v) => [`${v}h`, 'median']} />
+                <Line type="monotone" dataKey="resolutionH" stroke={c.ink} strokeWidth={1.75} dot={{ r: 2.5 }} connectNulls />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </Panel>
 
-        <section className="panel p-5">
-          <Head title="Recurring problems" note="phrases the classifier matched most" />
-          <ol className="mt-4 grid gap-x-8 gap-y-2.5 sm:grid-cols-2">
-            {data.recurring.map((r, i) => (
-              <li key={r.phrase} className="flex items-baseline gap-3 text-[13px]">
-                <span className="num w-5 font-mono text-[11px] text-muted">{String(i + 1).padStart(2, '0')}</span>
-                <span className="flex-1">&ldquo;{r.phrase}&rdquo;</span>
-                <span className="num font-mono text-muted">{r.count}</span>
-              </li>
-            ))}
-          </ol>
-        </section>
-
-        <section className="panel p-5">
-          <Head title="Category mix" />
-          <ul className="mt-4 space-y-3">
-            {data.categories.map((x) => (
-              <li key={x.key} className="grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1 text-[13px]">
-                <span>{x.label}</span>
-                <span className="num font-mono text-muted">{x.count}</span>
-                <span className="col-span-2 h-1 rounded-sm bg-ink-2" style={{ width: `${(x.count / maxCat) * 100}%` }} aria-hidden="true" />
-              </li>
-            ))}
-          </ul>
-        </section>
+        <div className="grid gap-6 sm:grid-cols-2">
+          <Panel title="By intake priority">
+            <ul className="space-y-3.5">
+              {data.bands.map((b) => (
+                <li key={b.band}>
+                  <div className="flex items-center justify-between text-[13px]"><Band band={b.band} withLabel /><span className="num font-mono">{b.count}</span></div>
+                  <div className="mt-1.5"><Bar value={b.count} max={maxBand} tone={{ P1: 'bg-p1', P2: 'bg-p2', P3: 'bg-p3', P4: 'bg-p4' }[b.band]} /></div>
+                </li>
+              ))}
+            </ul>
+          </Panel>
+          <Panel title="Recurring problems" sub="Most-matched classifier phrases">
+            <ol className="space-y-2.5">
+              {data.recurring.map((r) => (
+                <li key={r.phrase}>
+                  <div className="flex items-baseline justify-between text-[13px]"><span>&ldquo;{r.phrase}&rdquo;</span><span className="num font-mono text-muted">{r.count}</span></div>
+                  <div className="mt-1"><Bar value={r.count} max={maxRec} className="h-1" tone="bg-ink-2" /></div>
+                </li>
+              ))}
+            </ol>
+          </Panel>
+        </div>
       </div>
-    </div>
-  );
-}
 
-function Kpi({ label, value, sub, tone = '' }) {
-  return (
-    <div className="border-b border-r p-4 last:border-r-0 xl:border-b-0">
-      <p className="text-[12px] text-muted">{label}</p>
-      <p className={`num mt-1 font-mono text-[22px] font-semibold tracking-tight ${tone}`}>{value}</p>
-      {sub && <p className="mt-0.5 text-[11px] text-muted">{sub}</p>}
-    </div>
-  );
-}
-
-function Head({ title, note }) {
-  return (
-    <div className="flex items-baseline justify-between gap-4">
-      <h2 className="text-sm font-semibold">{title}</h2>
-      {note && <span className="text-xs text-muted">{note}</span>}
-    </div>
+      <Panel className="mt-6" title="Team performance" bodyClass="overflow-x-auto">
+        <table className="w-full min-w-[560px] text-left text-[13px]">
+          <thead className="border-b border-line bg-sunken text-[11px] uppercase tracking-[0.05em] text-muted">
+            <tr><th className="px-5 py-2.5 font-medium">Team</th><th className="px-3 py-2.5 text-right font-medium">Open</th><th className="px-3 py-2.5 text-right font-medium">Resolved</th><th className="px-3 py-2.5 text-right font-medium">Median time</th><th className="px-3 py-2.5 text-right font-medium">SLA met</th><th className="px-5 py-2.5 text-right font-medium">Rating</th></tr>
+          </thead>
+          <tbody className="num divide-y divide-line font-mono">
+            {data.teamPerformance.map((t) => (
+              <tr key={t.team}>
+                <td className="px-5 py-3 font-sans font-medium">{t.team}</td>
+                <td className="px-3 py-3 text-right">{t.open}</td>
+                <td className="px-3 py-3 text-right">{t.resolved}</td>
+                <td className="px-3 py-3 text-right">{h(t.medianH)}</td>
+                <td className={`px-3 py-3 text-right ${t.sla != null && t.sla < 80 ? 'text-p1' : ''}`}>{t.sla != null ? `${t.sla}%` : '–'}</td>
+                <td className="px-5 py-3 text-right">{t.csat != null ? t.csat.toFixed(1) : '–'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Panel>
+    </Page>
   );
 }

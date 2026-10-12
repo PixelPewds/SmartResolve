@@ -3,7 +3,9 @@
 Predictive customer support triage and sentiment router.
 Team BYTEFORCE, KITCOEK Hackathon, Advanced Track, AIML.
 
-Every incoming complaint is redacted, classified, scored 0 to 100 with a reason for every point, and routed to the team that owns it. Agents work a queue sorted by risk; customers get a relevant help article while they wait.
+Every incoming complaint is redacted, classified and routed. Its priority is a hybrid score: urgency and impact judged at intake, plus waiting time and SLA risk that grow while it waits. Similar complaints are clustered and volume spikes flagged as candidate incidents for a supervisor to verify. Each ticket gets an explainable expert recommendation.
+
+The full journey works end to end: customer submits, AI triage, priority scheduling, expert recommendation, incident detection, investigation, resolution, customer feedback, analytics.
 
 ## Run it locally
 
@@ -14,9 +16,9 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173 and use the **Support agent** or **Customer** buttons on the sign-in page.
+Open http://localhost:5173 and use the **Customer**, **Support agent** or **Supervisor** buttons on the sign-in page. A **Demo guide** button (bottom right) walks through the whole journey in 8 steps, switching roles for you.
 
-With no configuration the app uses an in-memory store seeded with 86 realistic tickets, and the local models. Both upgrade automatically when you add the environment variables below.
+With no configuration the app uses an in-memory store seeded with about 157 sample tickets, and the local models. Both upgrade automatically when you add the environment variables below.
 
 ```bash
 npm test        # behaviour checks for the triage engine
@@ -31,7 +33,7 @@ npm run build   # production build into dist/
 | Backend | Node.js, Express 5, REST + JSON, Zod validation |
 | Database | MongoDB (Atlas), with an in-memory fallback |
 | AI | Hugging Face Inference API, with local fallback models |
-| Auth | JWT in an httpOnly cookie, bcrypt password hashes, customer and agent roles |
+| Auth | JWT in an httpOnly cookie, bcrypt password hashes, customer, agent and supervisor roles |
 | Deploy | Vercel: static Vite build plus one Express serverless function |
 
 ## How the AI layer works
@@ -51,23 +53,49 @@ message -> PII redaction -> sentiment ---\
 
 Every Hugging Face call has a 3.5 s timeout and falls back to the local model on any error, so a slow or rate-limited API never blocks a ticket. The UI shows which engine produced each result.
 
-### Priority engine (0 to 100)
+### Hybrid priority (0 to 100)
 
-| Factor | Max | Driven by |
-|---|---|---|
-| Issue severity | 35 | Worst matched signal: critical ("charged twice", "locked out", "outage", "fraud"), major, minor |
-| Business impact | 25 | Customer tier plus scope words ("entire team", "production", "revenue") |
-| Repeat contact | 20 | Earlier tickets from the same customer in 7 days |
-| Customer frustration | 20 | Negative sentiment (max 12) plus explicit signals: capitals, "!!!", "third time" |
+| Factor | Max | Phase | Driven by |
+|---|---|---|---|
+| Urgency | 35 | Intake (AI) | Worst severity signal ("charged twice", "locked out", "outage", "fraud"), sentiment, repeat contact |
+| Impact | 25 | Intake (AI) | Customer tier plus scope words ("entire team", "production", "revenue") |
+| Waiting time | 20 | Live | `20 * (1 - e^(-hours/10))`, so it climbs fast at first then levels off |
+| SLA risk | 20 | Live | Share of the current SLA clock used; full 20 once breached |
 
-Bands: P1 >= 75 (1 h target), P2 >= 55 (4 h), P3 >= 35 (24 h), P4 (72 h).
+Live bands: P1 >= 70, P2 >= 52, P3 >= 34, else P4. The intake band (from the 60 intake points) sets the SLA targets.
 
-Two guardrails answer the deck's risk slide directly:
+Guardrails:
 
 - **Routine requests are capped at P3** when there is no severity signal and no repeat contact, so an angry "how do I change my photo???" does not jump the queue.
 - **Security and fraud language is floored at P2** and always routed to Account & Security.
+- **Verified critical incidents**: once a supervisor confirms an incident as critical, every linked ticket is pinned to the top and floored at 85. A major incident adds 8 points. **Candidate incidents never change a score.**
 
-Agents can correct sentiment or category on any ticket. The score and route are recomputed and the correction is logged, which feeds the "model agreement" metric on the analytics page.
+Every ticket shows the breakdown, split into "AI assessment" and "Scheduling".
+
+### SLA policy and escalation rules
+
+| Band | First response | Resolution |
+|---|---|---|
+| P1 | 15 min | 4 h |
+| P2 | 60 min | 8 h |
+| P3 | 4 h | 24 h |
+| P4 | 8 h | 72 h |
+
+Warning at 75% of the clock. Rules R1 to R5 escalate automatically; manual escalation overrides them. The SLA management page lists each rule.
+
+### Incident detection
+
+TF-IDF cosine similarity groups complaints (greedy clustering plus a merge pass). For each group, the last 3 hours are compared with its 14-day baseline using a Poisson z-score; a spike needs at least 4 complaints and 3x the usual rate. A spike becomes a **candidate**. Only a supervisor can confirm (critical or major) or dismiss it. Confirming links every similar ticket, escalates them (rule R4) and tells the affected customers it is a known issue. Resolving the incident can close all linked tickets with one summary.
+
+### Expert assignment
+
+Match score = skill fit (45) + availability (20) + workload headroom (20) + similar tickets resolved (15). Every recommendation lists its reasons. Agents can only assign the top match; a supervisor can override to anyone, with a written reason that is logged.
+
+### Model evaluation
+
+37 hand-labelled complaints, 12 of them deliberately hard (sarcasm, Hinglish, mixed issues, polite wording of a serious problem), run live on every load of Feedback & learning. Current local-model results: category 86%, sentiment 78%, urgency 46% exact and 86% within one level. The set was also used while building the rules, so these numbers are optimistic. The Triage lab shows the wrong predictions next to the expected answer.
+
+Agents can correct sentiment or category on any ticket. The score and route are recomputed and the correction is logged on Feedback & learning.
 
 ### Privacy
 
@@ -104,34 +132,45 @@ On first connection the app creates its indexes and seeds the demo data once (gu
 ```
 api/index.js          Vercel entry, exports the Express app
 server/
-  app.js              routes: auth, tickets, analytics, triage lab
+  app.js              routes: auth, tickets, incidents, assignment, SLA, analytics, learning, lab
+  services.js         ticket enrichment, queue sort, incident sync, notifications
+  sla.js              SLA policy, clocks, escalation rules
   store.js            MongoDB or in-memory, same interface
-  seed.js             deterministic demo data, run through the real pipeline
+  seed.js             demo data (SIMULATED), run through the real pipeline
   auth.js             JWT cookie sessions, role guard
   dev.js              local server with a tiny .env loader
   ai/
     redact.js         PII removal
     sentiment.js      HF + lexicon + sarcasm guard
     classify.js       HF zero-shot + keyword classifier
-    priority.js       explainable scoring and guardrails
+    priority.js       hybrid scoring and guardrails
+    similarity.js     TF-IDF vectors and cosine search
+    incidents.js      clustering and spike detection
+    experts.js        explainable expert matching
+    evalset.js        labelled test set and evaluation
     routing.js        team assignment rules
     kb.js             help articles and recommender
     ai.test.js        behaviour checks
 src/
   pages/Login.jsx
-  pages/portal/       customer: raise and track requests
-  pages/agent/        queue, ticket detail, analytics, triage lab
-  components/         shared UI, triage panels, thread
+  pages/portal/       customer: 3-step request wizard, tracking, feedback, help centre
+  pages/agent/        dashboard, queue, ticket workspace, incidents, assignment,
+                      SLA, escalations, analytics, learning, triage lab, settings
+  components/         shared UI kit, triage panels, thread, bell, demo guide
 ```
 
-## Demo script for judges (about 3 minutes)
+## Demo script (about 4 minutes)
 
-1. **Sign in as Support agent.** The queue opens on an enterprise outage at P1 and a fraud report flagged for possible account compromise. Point out: colour only appears where it means something.
-2. **Open the fraud ticket.** The four factors add up to less than 55, and the guardrail box shows it being floored to P2 anyway. This is the "explainable" claim, shown rather than told.
-3. **Correct the sentiment** to Neutral on any ticket. Watch the score recompute. Mention this feeds model agreement on Analytics.
-4. **Triage lab.** Run "Angry but routine": all caps, three exclamation marks, enterprise tier, still capped at P3. Then "Sarcastic praise": reads as praise to a normal model, flagged as possible sarcasm here. Then "Double charge, repeat": the card number is gone in the stored text.
-5. **Analytics.** Volume by priority, negative sentiment trend, team load, SLA compliance, and recurring problems pulled from the classifier's own evidence.
-6. **Sign out, sign in as Customer.** Submit a complaint. The confirmation names the team, the response target and suggests a help article before any human has replied.
+The in-app **Demo guide** follows the same steps.
+
+1. **Reset first.** Sign in as Supervisor, Settings, Reset demo data. Ticket ages, SLA clocks and the website spike are then relative to now.
+2. **Customer submits.** Sign in as Customer, choose the "Website not loading" example. The AI preview (marked Simulated) shows category, urgency, tone and team as you type. Review, submit, note the request ID and the 5-step tracker.
+3. **Agent dashboard.** Sign in as Support agent. The banner shows possible incidents. The queue is sorted by hybrid score; open any ticket and the breakdown shows intake points versus waiting and SLA points.
+4. **Ticket workspace.** AI insights (with wrong-prediction correction), similar resolved tickets with their fixes, internal notes, timeline. Assign: an agent can only take the top recommendation and sees why.
+5. **Incident watch.** Sign in as Supervisor. The website group is a candidate: 16 or more complaints in 3 hours against almost none in 14 days. Confirm as critical. The new ticket jumps to P1, pinned, escalated by rule R4, and the customer sees a "known issue" banner.
+6. **Expert assignment.** Override a recommendation; a reason is required and logged.
+7. **Resolve.** Resolve the incident with a root cause; its linked tickets close together.
+8. **Feedback and learning.** As Customer, rate the resolved request. As staff, Feedback & learning shows ratings, agent corrections and the model evaluation, failures included.
 
 ## Demo accounts
 
@@ -139,12 +178,23 @@ The one-click buttons on the sign-in page use these. Set `DEMO_LOGIN=off` to dis
 
 | Role | Email | Password |
 |---|---|---|
-| Agent | agent@smartresolve.app | agent-demo-2026 |
 | Customer | rohan.mehta@example.com | customer-demo-2026 |
+| Agent | agent@smartresolve.app | agent-demo-2026 |
+| Supervisor | supervisor@smartresolve.app | supervisor-demo-2026 |
+
+The supervisor confirms and dismisses incidents, overrides assignments, removes manual escalations and resets the demo data.
+
+## What is real and what is simulated
+
+Real, working: the triage pipeline on every ticket, hybrid scores and reasons, SLA clocks and escalation rules, similarity search, clustering and spike statistics, expert scores, the model evaluation, and every write (tickets, replies, notes, assignments, escalations, incidents, feedback) to the database.
+
+Simulated: all customers, agents, availability and ticket history are invented sample data, as are the seeded ratings and corrections. Attachments record the file name only. Notifications are in-app only. Anything simulated carries a dashed "Simulated" tag in the UI; Settings lists both sides.
 
 ## Known limits of the prototype
 
 - The local models are rule and lexicon based. They are transparent and fast, not state of the art; set `HF_TOKEN` for the transformer models.
 - Sarcasm detection is a heuristic for one common pattern (praise plus a stated failure), not a general solution.
-- Single agent role, no per-team permissions yet.
-- No email or WhatsApp ingestion; tickets come from the web portal.
+- No per-team permissions yet: any agent can see every queue.
+- No email or WhatsApp ingestion; tickets come from the web portal. No outgoing email or SMS.
+- Spike detection needs history to be meaningful. With an empty baseline it reports "new pattern" rather than a ratio.
+- The evaluation set is small (37 cases) and not held out from rule development.

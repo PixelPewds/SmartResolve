@@ -28,7 +28,7 @@ const KEYWORDS = {
     ['overcharged', 4], ['emi', 2], ['wallet', 2], ['cashback', 2], ['discount', 1], ['coupon', 1],
   ],
   technical: [
-    ['crash', 3], ['crashes', 3], ['crashing', 3], ['error', 2], ['bug', 3], ['not loading', 3],
+    ['crash', 3], ['crashes', 3], ['crashing', 3], ['error', 2], ['errors', 2], ['bug', 3], ['not loading', 3],
     ['app', 1], ['website', 1], ['page', 1], ['server', 2], ['outage', 4], ['down', 2],
     ['slow', 2], ['freeze', 3], ['freezes', 3], ['blank screen', 3], ['api', 2], ['sync', 2],
     ['update', 1], ['install', 2], ['upload', 2], ['500', 3], ['timeout', 2], ['not working', 2],
@@ -41,7 +41,7 @@ const KEYWORDS = {
     ['wrong item', 4], ['return', 2], ['replacement', 2], ['dispatch', 2], ['address', 1],
   ],
   account: [
-    ['login', 3], ['log in', 3], ['password', 3], ['locked out', 4], ['otp', 3], ['account', 2],
+    ['login', 3], ['log in', 3], ['password', 3], ['locked out', 4], ['otp', 3], ['account', 2], ['fraud', 4], ['saved card', 2],
     ['sign in', 3], ['two factor', 3], ['2fa', 3], ['hacked', 4], ['unauthorized', 4],
     ['email change', 2], ['verification', 2], ['profile', 1], ['username', 2], ['deactivate', 2],
     ['delete my account', 3], ['suspicious', 3], ['access', 1],

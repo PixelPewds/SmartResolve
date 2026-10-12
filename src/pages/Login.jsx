@@ -1,16 +1,17 @@
 import { useState } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
-import { ArrowRight, Headset, UserCircle } from '@phosphor-icons/react';
+import { ArrowRight, Headset, UserCircle, ShieldStar } from '@phosphor-icons/react';
 import { Button, Logo, ErrorNote } from '../components/ui.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import { api } from '../lib/api.js';
 import { ThemeToggle } from '../lib/theme.jsx';
 
 const LINES = [
-  ['sentiment', 'Reads tone, including negation and the complaint phrases generic models miss.'],
-  ['priority', 'Scores 0 to 100 from severity, impact, repeat contact and frustration. Every point has a reason.'],
-  ['routing', 'Sends the ticket to the team that owns it, and says which rule decided.'],
+  ['priority', 'Urgency and impact at intake, waiting time and SLA risk while it waits. Every point has a reason.'],
+  ['incidents', 'Clusters similar complaints and flags volume spikes. A person confirms before anything changes.'],
+  ['experts', 'Recommends who should take it from skills, availability and workload, and says why.'],
 ];
+const home = (u) => (u.role === 'customer' ? '/portal' : '/agent');
 
 export default function Login() {
   const { user, setUser } = useAuth();
@@ -20,9 +21,9 @@ export default function Login() {
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
 
-  if (user) return <Navigate to={user.role === 'agent' ? '/agent' : '/portal'} replace />;
+  if (user) return <Navigate to={home(user)} replace />;
 
-  const done = (u) => { setUser(u); nav(u.role === 'agent' ? '/agent' : '/portal', { replace: true }); };
+  const done = (u) => { setUser(u); nav(home(u), { replace: true }); };
 
   async function submit(e) {
     e.preventDefault();
@@ -71,7 +72,7 @@ export default function Login() {
 
           <h2 className="text-xl font-semibold tracking-tight">{mode === 'signin' ? 'Sign in' : 'Create a customer account'}</h2>
           <p className="mt-1 text-sm text-muted">
-            {mode === 'signin' ? 'Agents and customers use the same sign in.' : 'Raise and track support requests.'}
+            {mode === 'signin' ? 'Customers, agents and supervisors use the same sign in.' : 'Raise and track support requests.'}
           </p>
 
           <form onSubmit={submit} className="mt-7 space-y-4" noValidate>
@@ -108,9 +109,11 @@ export default function Login() {
           <div className="mt-10 border-t border-line pt-6">
             <p className="eyebrow">Explore the prototype</p>
             <div className="mt-3 grid gap-2">
-              <DemoButton icon={Headset} title="Support agent" hint="Queue, triage, analytics" busy={busy === 'agent'} onClick={() => demo('agent')} />
-              <DemoButton icon={UserCircle} title="Customer" hint="Raise and track a ticket" busy={busy === 'customer'} onClick={() => demo('customer')} />
+              <DemoButton icon={UserCircle} title="Customer" hint="Raise a complaint, track it, rate the fix" busy={busy === 'customer'} onClick={() => demo('customer')} />
+              <DemoButton icon={Headset} title="Support agent" hint="Priority queue, ticket workspace, resolution" busy={busy === 'agent'} onClick={() => demo('agent')} />
+              <DemoButton icon={ShieldStar} title="Supervisor" hint="Confirm incidents, override assignment, reset data" busy={busy === 'supervisor'} onClick={() => demo('supervisor')} />
             </div>
+            <p className="mt-3 text-[11.5px] leading-relaxed text-muted">Prototype with invented sample data. Anything marked Simulated in the app is not real customer data.</p>
           </div>
         </div>
       </section>

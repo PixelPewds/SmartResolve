@@ -6,6 +6,13 @@ export function Thread({ thread, viewer }) {
   return (
     <ol className="space-y-5">
       {thread.map((m) => {
+        // Automated notices (incident links) read as a banner, not a person speaking.
+        if (m.author === 'system') return (
+          <li key={m.id} className="rounded-md border border-dashed border-line-strong bg-sunken/60 px-4 py-3">
+            <p className="text-[12px] text-muted"><span className="font-medium text-ink-2">{m.name}</span> &middot; automated update <span className="ml-1 font-mono text-[11px]">{fmtDateTime(m.at)}</span></p>
+            <p className="mt-1 whitespace-pre-wrap text-[13.5px] leading-relaxed text-ink-2">{m.body}</p>
+          </li>
+        );
         const mine = m.author === viewer;
         const staff = m.author === 'agent';
         return (
