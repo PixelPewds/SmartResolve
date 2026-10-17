@@ -5,7 +5,7 @@
 // intensifiers ("extremely slow") and support-specific complaint words that
 // generic sentiment lists miss ("charged twice", "still waiting").
 
-import { tokenize, normalize, matchPhrases, clamp, round } from './text.js';
+import { tokenize, normalize, matchPhrases, capsRatio, clamp, round } from './text.js';
 import { hfInference, HF_MODELS } from './hf.js';
 
 const LEXICON = {
@@ -17,7 +17,9 @@ const LEXICON = {
   wrong: -2, missing: -2, lost: -2, damaged: -3, late: -2, delayed: -2, never: -1,
   scam: -4, fraud: -4, cheated: -4, stolen: -3, rude: -3, ignored: -3, waste: -3,
   worried: -2, confused: -1, stuck: -2, crash: -2, crashes: -2, crashing: -2, down: -1,
-  problem: -1, issue: -1, complaint: -2, refund: -1, cancel: -1, hate: -4, sucks: -3,
+  // "refund" is deliberately absent: "can you check my refund?" is a calm
+  // question, and scoring the word itself made every refund query negative.
+  problem: -1, issue: -1, complaint: -2, cancel: -1, hate: -4, sucks: -3,
   hopeless: -3, nightmare: -4, incompetent: -4, joke: -2, overcharged: -3, unusable: -3,
   // positive
   thanks: 2, thank: 2, great: 3, good: 2, excellent: 4, amazing: 4, awesome: 4,
@@ -32,8 +34,13 @@ const PHRASES = {
   'no response': -3, 'nobody replied': -3, 'third time': -3, 'second time': -2,
   'not received': -2, 'never arrived': -3, 'waste of time': -4, 'locked out': -2,
   'not working': -2, "doesn't work": -2, 'does not work': -2, 'keeps crashing': -3,
+  "still haven't": -1, 'still have not': -1, "haven't received": -1.5, 'have not received': -1.5,
+  'not fixed': -2, 'no update': -2,
   'thank you': 2, 'works now': 2, 'sorted out': 2,
 };
+// "five times", "4 times", "many times": repeat contact is the strongest
+// frustration signal in support text and the word list cannot spell every number.
+const REPEAT_RE = /\b(?:\d+|three|four|five|six|several|many|multiple|so many) times\b/;
 
 const NEGATORS = new Set(['not', 'no', 'never', "don't", "doesn't", "didn't", "isn't", "wasn't", "can't", 'cannot', "won't", 'hardly']);
 const INTENSIFIERS = { very: 1.5, extremely: 2, really: 1.4, so: 1.3, totally: 1.6, completely: 1.7, absolutely: 1.8, super: 1.5 };
@@ -60,6 +67,8 @@ export function lexiconSentiment(text) {
     score += PHRASES[p];
     hits.push({ term: p, weight: PHRASES[p] });
   }
+  const rep = norm.match(REPEAT_RE);
+  if (rep) { score -= 3; hits.push({ term: rep[0], weight: -3 }); }
 
   const bangs = (String(text).match(/!/g) || []).length;
   if (score < 0 && bangs >= 2) score -= Math.min(3, bangs * 0.5);
@@ -142,4 +151,75 @@ async function rawSentiment(text) {
     }
   }
   return { ...lexiconSentiment(text), latencyMs: Date.now() - t0 };
+}
+
+/* ---------------------------------------------------------------- emotion */
+
+// Polarity alone cannot tell "worried about my money" from "this is the third
+// time I am writing", and the right reply differs. Cue words per emotion,
+// scored, highest wins. A rule model: transparent, and wrong in known ways.
+const EMOTION_CUES = {
+  angry: ['furious', 'angry', 'pathetic', 'disgusting', 'worst', 'scam', 'cheated', 'hate', 'useless', 'incompetent',
+    'legal action', 'consumer court', 'shame on', 'nonsense', 'fed up', 'enough is enough', 'unacceptable', 'ridiculous'],
+  frustrated: ['frustrated', 'frustrating', 'again', 'still', 'third time', 'second time', 'how many times', 'no response',
+    'nobody', 'no one', 'still waiting', 'no update', 'chasing', 'keep asking', 'ignored', 'waste of time', 'contacted you',
+    'every time', 'not fixed', "haven't received", 'have not received'],
+  anxious: ['worried', 'scared', 'afraid', 'anxious', 'urgent', 'urgently', 'emergency', 'please help', 'help me', 'my money',
+    'savings', 'panic', 'stressed', 'tension', 'pareshaan', 'need it today', 'rent', 'hospital', 'salary'],
+  confused: ['confused', 'confusing', "don't understand", 'do not understand', 'not sure', 'unclear', 'how do i', 'how to',
+    'where can i', 'what does', 'which option', 'can someone explain'],
+};
+const REPEAT_CUES = ['third time', 'second time', 'fourth time', 'how many times', 'contacted you', 'yet again', 'once again', 'written to you'];
+export const EMOTION_LABEL = { angry: 'Angry', frustrated: 'Frustrated', anxious: 'Anxious', confused: 'Confused', satisfied: 'Satisfied', calm: 'Calm' };
+
+export function detectEmotion(text, sentiment) {
+  const norm = normalize(text);
+  const neg = sentiment.label === 'negative' ? Math.abs(sentiment.score) : 0;
+  const hits = Object.fromEntries(Object.entries(EMOTION_CUES).map(([k, cues]) => [k, matchPhrases(norm, cues)]));
+  if (REPEAT_RE.test(norm)) hits.frustrated.push(norm.match(REPEAT_RE)[0]);
+  const caps = capsRatio(text) > 0.45;
+  const bangs = (String(text).match(/!/g) || []).length;
+  const weight = {
+    angry: hits.angry.length * 1.4 + (caps ? 1.5 : 0) + (bangs >= 3 && neg ? 1 : 0),
+    frustrated: hits.frustrated.length * (neg ? 1.1 : 0.6) + (bangs && neg ? 0.3 : 0),
+    anxious: hits.anxious.length,
+    confused: hits.confused.length * 0.8 + ((text.match(/\?/g) || []).length && !neg ? 0.4 : 0),
+  };
+  const [top, w] = Object.entries(weight).sort((a, b) => b[1] - a[1])[0];
+  const repeat = REPEAT_RE.test(norm) || matchPhrases(norm, REPEAT_CUES).length > 0;
+
+  if (sentiment.label === 'positive' && w < 1) return { emotion: 'satisfied', intensity: round(clamp(sentiment.score, 0.2, 1)), cues: [], repeat };
+  // Mild negativity with no emotional cue is someone describing a problem
+  // ("our payment gateway is down"), not an upset customer.
+  if (w < 1 && neg < 0.35) return { emotion: 'calm', intensity: 0, cues: [], repeat };
+  // Negative but no specific cue: plain dissatisfaction reads as frustration.
+  const emotion = w >= 1 ? top : 'frustrated';
+  const intensity = round(clamp(0.3 + 0.15 * w + 0.45 * neg, 0.2, 1));
+  return { emotion, intensity, cues: (hits[emotion] || []).slice(0, 4), repeat };
+}
+
+// 0..1 used by the escalation tracker. Anger and frustration count fully,
+// anxiety partly: a worried customer needs reassurance, not a supervisor.
+export function frustrationIndex(sentiment, emo) {
+  const neg = sentiment.label === 'negative' ? Math.abs(sentiment.score) : 0;
+  const share = { angry: 0.55, frustrated: 0.5, anxious: 0.25, confused: 0.1 }[emo.emotion] || 0;
+  // Having to write again is the clearest escalation signal there is.
+  return round(clamp(neg * 0.6 + emo.intensity * share + (emo.repeat ? 0.15 : 0), 0, 1));
+}
+
+// Per-message analysis stored on every customer message (Emotion Escalation
+// Tracker). `offline` skips Hugging Face, used for the seed and the chatbot.
+export async function analyzeMessage(text, { offline = false } = {}) {
+  const s = offline ? sarcasmCheck(text, lexiconSentiment(text)) : await analyzeSentiment(text);
+  return describeMessage(text, s);
+}
+
+// Same shape from a sentiment result already computed (ticket intake).
+export function describeMessage(text, s) {
+  const emo = detectEmotion(text, s);
+  return {
+    label: s.label, score: s.score, confidence: s.confidence, engine: s.engine, model: s.model,
+    sarcasm: Boolean(s.sarcasm), emotion: emo.emotion, intensity: emo.intensity, cues: emo.cues,
+    repeat: emo.repeat, frustration: frustrationIndex(s, emo),
+  };
 }

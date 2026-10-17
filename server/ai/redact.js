@@ -26,6 +26,15 @@ export function redact(text) {
 
   out = out.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, () => { found.push('email'); return '[email]'; });
 
+  // UPI IDs (name@okaxis) look like emails without a dot in the domain, so
+  // they survive the email rule. Social handles (@brand) have nothing before the @.
+  out = out.replace(/\b[a-z0-9][a-z0-9._-]{1,63}@[a-z][a-z0-9]{1,30}\b/gi, () => { found.push('upi id'); return '[upi id]'; });
+
+  out = out.replace(/\b((?:a\/c|acc(?:ount)?)(?:\s*(?:no|number))?\.?)\s*[:#-]?\s*[x*]*(\d{9,18})\b/gi, (m, label, d) => {
+    found.push('account number');
+    return `${label} [account ending ${d.slice(-4)}]`;
+  });
+
   // Indian mobiles (+91 optional) and generic 10-digit numbers.
   out = out.replace(/(?:\+?91[ -]?)?\b[6-9]\d{4}[ -]?\d{5}\b/g, () => { found.push('phone'); return '[phone]'; });
 

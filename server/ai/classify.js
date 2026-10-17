@@ -32,7 +32,7 @@ const KEYWORDS = {
     ['app', 1], ['website', 1], ['page', 1], ['server', 2], ['outage', 4], ['down', 2],
     ['slow', 2], ['freeze', 3], ['freezes', 3], ['blank screen', 3], ['api', 2], ['sync', 2],
     ['update', 1], ['install', 2], ['upload', 2], ['500', 3], ['timeout', 2], ['not working', 2],
-    ['integration', 2], ['dashboard', 1], ['notification', 1],
+    ['integration', 2], ['dashboard', 1], ['notification', 1], ['notifications', 1], ['loading', 2], ['pages', 1],
   ],
   delivery: [
     ['delivery', 3], ['delivered', 3], ['shipment', 3], ['shipping', 3], ['courier', 3],
@@ -71,7 +71,10 @@ export function keywordClassify(text) {
   // Confidence rises with the share of signal AND the margin over second place.
   const share = topScore / total;
   const margin = (topScore - runner) / Math.max(topScore, 1);
-  const confidence = round(Math.min(0.96, 0.32 + share * 0.45 + margin * 0.25));
+  let confidence = round(Math.min(0.96, 0.32 + share * 0.45 + margin * 0.25));
+  // One weak cue ("it is not working") wins by default, not on evidence.
+  // Cap it below the routing threshold so a person checks it.
+  if (top !== 'general' && topScore <= 2) confidence = Math.min(confidence, 0.4);
 
   return {
     category: top,

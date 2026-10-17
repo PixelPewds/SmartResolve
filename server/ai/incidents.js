@@ -10,9 +10,10 @@
 // coincidence (several unrelated "app crashed" reports after one update).
 
 import { buildIndex, centroid, cosine, topTerms } from './similarity.js';
+import { fingerprint, clusterDna } from './fingerprint.js';
 
 const HOUR = 3600e3;
-const JOIN = 0.3;        // similarity needed to join a cluster
+export const JOIN = 0.3;      // similarity needed to join a cluster
 const MATCH = 0.26;      // similarity needed to count toward volume history
 const RECENT_H = 3;
 const WINDOW_H = 24;
@@ -24,13 +25,21 @@ export function detectClusters(tickets, now = Date.now()) {
     .filter((t) => now - Date.parse(t.createdAt) <= WINDOW_H * HOUR)
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 
+  return groupSimilar(recent, index)
+    .filter((c) => c.members.length >= 4)
+    .map((c) => describe(c, tickets, index, now))
+    .sort((a, b) => b.spike.z - a.spike.z);
+}
+
+// Exported for the clustering evaluation, which sweeps `join`.
+export function groupSimilar(recent, index, join = JOIN) {
   // Greedy single pass: each ticket joins the most similar cluster centroid,
   // or starts its own. Good enough at this scale and easy to explain.
   const clusters = [];
   for (const t of recent) {
     const v = index.vecs.get(t.id);
     let best = null;
-    let bestScore = JOIN;
+    let bestScore = join;
     for (const c of clusters) {
       const s = cosine(v, c.center);
       if (s >= bestScore) { best = c; bestScore = s; }
@@ -44,7 +53,7 @@ export function detectClusters(tickets, now = Date.now()) {
   // centroids are as close as a member would need to be to join.
   for (let i = 0; i < clusters.length; i++) {
     for (let j = i + 1; j < clusters.length; j++) {
-      if (cosine(clusters[i].center, clusters[j].center) >= JOIN) {
+      if (cosine(clusters[i].center, clusters[j].center) >= join) {
         clusters[i].members.push(...clusters[j].members);
         clusters[i].members.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
         clusters[i].center = centroid(clusters[i].members.map((m) => index.vecs.get(m.id)));
@@ -53,11 +62,7 @@ export function detectClusters(tickets, now = Date.now()) {
       }
     }
   }
-
-  return clusters
-    .filter((c) => c.members.length >= 4)
-    .map((c) => describe(c, tickets, index, now))
-    .sort((a, b) => b.spike.z - a.spike.z);
+  return clusters;
 }
 
 function describe(c, tickets, index, now) {
@@ -105,6 +110,8 @@ function describe(c, tickets, index, now) {
     ticketIds: c.members.map((t) => t.id),
     firstReportedAt: firstAt,
     customers: new Set(c.members.map((t) => t.customerId)).size,
+    // What the group shares beyond wording: intent, service, error codes.
+    dna: { ...clusterDna(c.members.map((t) => t.fingerprint || fingerprint(t))), firstAt, lastAt: c.members.at(-1).createdAt },
     spike: {
       isSpike,
       recent,

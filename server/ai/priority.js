@@ -31,7 +31,8 @@ const SEVERITY = [
     'outage', 'data loss', 'hacked', 'unauthorized', 'fraud', 'stolen', 'security breach',
     'charged twice', 'double charged', 'locked out', 'cannot access', "can't access", 'completely down',
     'site is down', 'app is down', 'all users', 'money deducted', 'legal action', 'consumer court',
-    'accessed by someone',
+    'accessed by someone', 'is down', 'are down', 'gateway down', 'money was deducted', 'amount deducted',
+    'amount debited', 'deducted but', 'debited but', 'still unpaid',
   ] },
   { level: 'major', points: 17, terms: [
     'not working', 'crash', 'crashes', 'crashing', 'failed', 'payment failed', 'error', 'errors',
@@ -97,7 +98,7 @@ export function assessIntake({ text, sentiment, customer = {}, priorContacts = 0
     reasons: [
       `${cap(tier)} customer (+${TIER_POINTS[tier]})`,
       ...(scopeHits.length ? [`Wide scope: ${quote(scopeHits.slice(0, 2))} (+7)`] : []),
-      priorContacts ? `${priorContacts} earlier ticket${priorContacts > 1 ? 's' : ''} this week (+${repeatPts})` : 'First contact this week',
+      priorContacts ? `${priorContacts} earlier contact${priorContacts > 1 ? 's' : ''} this week, tickets or follow-ups (+${repeatPts})` : 'First contact this week',
     ],
   };
 
@@ -113,6 +114,12 @@ export function assessIntake({ text, sentiment, customer = {}, priorContacts = 0
   if (matchPhrases(norm, SECURITY).length && RANK[intakeBand] > 2) {
     intakeBand = 'P2';
     rules.push('Security or fraud signal: intake floored at P2');
+  }
+  // Guardrail: a calm report of a critical problem ("our payment gateway is
+  // down") must not sit at P3 just because the customer is polite or small.
+  if (sev.level === 'critical' && RANK[intakeBand] > 2) {
+    intakeBand = 'P2';
+    rules.push(`Critical problem (${quote(sev.hits.slice(0, 2))}): intake floored at P2 regardless of tone`);
   }
 
   return { urgency, impact, intakeScore, intakeBand, rules, severity: sev.level };
